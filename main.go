@@ -1,8 +1,10 @@
 package main
 
 import (
+	"flag"
 	"fmt"
 	"net/http"
+	"os"
 	"strconv"
 	"strings"
 	"time"
@@ -44,7 +46,7 @@ func (d *Device) parseMqttProp(
 			unit:    "",
 			ignored: false,
 		}
-		logger.Info("Created new homie property")
+		logger.Debug("Created new homie property")
 	}
 
 	if len(parts) == 0 {
@@ -63,7 +65,7 @@ func (d *Device) parseMqttProp(
 		prop.name = string(payload)
 	} else if parts[0] == "$datatype" {
 		if strings.HasPrefix(payload, "int") || strings.HasPrefix(payload, "bool") {
-			logger.Warn("Unsupported datatype, converting to float", "datatype", payload)
+			logger.Info("Unsupported datatype, converting to float", "datatype", payload)
 		} else if !strings.HasPrefix(payload, "float") {
 			logger.Warn("Unsupported datatype, ignoring property", "datatype", payload)
 			prop.ignored = true
@@ -71,7 +73,7 @@ func (d *Device) parseMqttProp(
 	} else if parts[0] == "$unit" {
 		prop.unit = payload
 	} else if parts[0][0] == '$' {
-		logger.Info("Attribute is ignored", "attribute", parts[0])
+		logger.Debug("Attribute is ignored", "attribute", parts[0])
 	} else {
 		logger.Error("Unexpected property attributes", "attributes", parts)
 	}
@@ -126,7 +128,7 @@ func onMqttMsg(
 			name:       "",
 			properties: map[string]Property{},
 		}
-		logger.Info("Created new homie device")
+		logger.Debug("Created new homie device")
 	}
 
 	if parts[3] == "$name" {
@@ -135,7 +137,7 @@ func onMqttMsg(
 		props := strings.Split(string(payload), ",")
 		dev.properties = make(map[string]Property, len(props))
 	} else if parts[3][0] == '$' {
-		logger.Warn("attribute is ignored", "attribute", parts[3])
+		logger.Info("attribute is ignored", "attribute", parts[3])
 	} else {
 		dev.parseMqttProp(logger, metric, parts[3], parts[4:], string(payload))
 	}
@@ -143,30 +145,52 @@ func onMqttMsg(
 	devices[path] = dev
 }
 
+type Args struct {
+	broker_url     string
+	listen_address string
+	debug          bool
+}
+
+func parseArgs() Args {
+	var args Args
+	flag.StringVar(&(args.broker_url), "b", "broker", "MQTT broker url. With the format tcp://<host>:<port>")
+	flag.StringVar(&(args.listen_address), "l", "list", "Address to listen on. With the format <ip>:<port>")
+	flag.BoolVar(&(args.debug), "d", false, "Set debug mode")
+	flag.Parse()
+	return args
+}
+
 func main() {
+	args := parseArgs()
 	devices := make(map[string]Device, 10)
-	slog.Info("homie exporter start")
+    lvl := slog.LevelInfo
+    if args.debug {
+        lvl = slog.LevelDebug
+    }
+    logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{
+		Level: lvl,
+	}))
+	logger.Info("homie exporter start")
 	reg := prometheus.NewRegistry()
-	slog.Info("prom exporter initialized")
+	logger.Debug("prom exporter initialized")
 	http.Handle("/metrics", promhttp.HandlerFor(reg, promhttp.HandlerOpts{Registry: reg}))
 
 	metric := NewMetrics(reg)
 
-	broker := "tcp://192.168.1.252:1883"
 	mqtt_client := mqtt.NewClient(
-		mqtt.NewClientOptions().AddBroker(broker),
+		mqtt.NewClientOptions().AddBroker(args.broker_url),
 	)
 
-	mqtt_logger := slog.With("broker", broker)
+	mqtt_logger := logger.With("broker", args.broker_url)
 	token := mqtt_client.Connect()
 	wait_result := token.WaitTimeout(5 * time.Second)
 	err := token.Error()
 	if err != nil {
-		mqtt_logger.Error("error connecting to mqtt", "broker", broker, "error", err)
+		mqtt_logger.Error("error connecting to mqtt", "broker", args.broker_url, "error", err)
 		return
 	}
 
-	mqtt_logger.Info("mqtt client started and connected", "wait", wait_result)
+	mqtt_logger.Debug("mqtt client started and connected", "wait", wait_result)
 	topic := "homie/#"
 	mqtt_logger = mqtt_logger.With("subtopic", topic)
 	sub_token := mqtt_client.Subscribe(
@@ -184,10 +208,10 @@ func main() {
 		return
 	}
 
-	slog.Info("mqtt client subscribed", "subtoken", sub_token)
-	err = http.ListenAndServe("127.0.0.1:4309", nil)
+	logger.Debug("mqtt client subscribed", "subtoken", sub_token)
+	err = http.ListenAndServe(args.listen_address, nil)
 	if err != nil {
-		slog.Error("Error starting server", "error", err)
+		logger.Error("Error starting server", "error", err)
 		return
 	}
 }
