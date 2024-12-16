@@ -15,10 +15,9 @@ import (
 )
 
 type Property struct {
-	name  string
-	value float64
-	unit  string
-    ignored bool
+	name    string
+	unit    string
+	ignored bool
 }
 
 // Actually this should be a device Node, but I'm not parsing root device properties,
@@ -29,52 +28,62 @@ type Device struct {
 	properties map[string]Property
 }
 
-func (d *Device)parseMqttProp(logger *slog.Logger, prop_name string, parts []string, payload string) {
+func (d *Device) parseMqttProp(
+	logger *slog.Logger,
+	metric *prometheus.GaugeVec,
+	prop_name string,
+	parts []string,
+	payload string,
+) {
 	logger = logger.With("property", prop_name)
 	prop, exists := d.properties[prop_name]
 
 	if !exists {
 		prop = Property{
 			name:    "",
-			value:   0,
 			unit:    "",
 			ignored: false,
 		}
 		logger.Info("Created new homie property")
 	}
 
-    if len(parts) == 0 {
-        value, err := strconv.ParseFloat(payload, 64)
-        if err != nil {
-            logger.Warn("Couldn't convert payload to float", "payload", payload, "error", err)
-        } else {
-            prop.value = value
-        }
-    } else if parts[0] == "$name" {
+	if len(parts) == 0 {
+		value, err := strconv.ParseFloat(payload, 64)
+		if err != nil {
+			logger.Warn("Couldn't convert payload to float", "payload", payload, "error", err)
+		} else if !prop.ignored {
+			metric.With(prometheus.Labels{
+				"device":   d.name,
+				"path":     d.path,
+				"property": prop.name,
+				"unit":     prop.unit,
+			}).Set(value)
+		}
+	} else if parts[0] == "$name" {
 		prop.name = string(payload)
 	} else if parts[0] == "$datatype" {
-        if strings.HasPrefix(payload, "int") || strings.HasPrefix(payload, "bool") {
-            logger.Warn("Unsupported datatype, converting to float", "datatype", payload)
-        } else if ! strings.HasPrefix(payload, "float") {
-            logger.Warn("Unsupported datatype, ignoring property", "datatype", payload)
-            prop.ignored = true
-        }
+		if strings.HasPrefix(payload, "int") || strings.HasPrefix(payload, "bool") {
+			logger.Warn("Unsupported datatype, converting to float", "datatype", payload)
+		} else if !strings.HasPrefix(payload, "float") {
+			logger.Warn("Unsupported datatype, ignoring property", "datatype", payload)
+			prop.ignored = true
+		}
 	} else if parts[0] == "$unit" {
-        prop.unit = payload
+		prop.unit = payload
 	} else if parts[0][0] == '$' {
-        logger.Info("Attribute is ignored", "attribute", parts[0])
-    } else {
-        logger.Error("Unexpected property attributes", "attributes", parts)
-    }
+		logger.Info("Attribute is ignored", "attribute", parts[0])
+	} else {
+		logger.Error("Unexpected property attributes", "attributes", parts)
+	}
 
-    d.properties[prop_name] = prop
+	d.properties[prop_name] = prop
 }
 
 func NewMetrics(reg prometheus.Registerer) *prometheus.GaugeVec {
 	m := prometheus.NewGaugeVec(prometheus.GaugeOpts{
 		Name: "homie_sensor",
 		Help: "Homie metric.",
-	}, []string{"device", "sensor"})
+	}, []string{"device", "path", "property", "unit"})
 
 	err := reg.Register(m)
 	if err != nil {
@@ -83,8 +92,14 @@ func NewMetrics(reg prometheus.Registerer) *prometheus.GaugeVec {
 	return m
 }
 
-func onMqttMsg(logger *slog.Logger, devices map[string]Device, _ mqtt.Client, msg mqtt.Message) {
-    payload := msg.Payload()
+func onMqttMsg(
+	logger *slog.Logger,
+	metric *prometheus.GaugeVec,
+	devices map[string]Device,
+	_ mqtt.Client,
+	msg mqtt.Message,
+) {
+	payload := msg.Payload()
 	logger = logger.With("ID", msg.MessageID(), "topic", msg.Topic(), "payload", payload)
 	logger.Debug("New mqtt message")
 	parts := strings.Split(msg.Topic(), "/")
@@ -92,16 +107,16 @@ func onMqttMsg(logger *slog.Logger, devices map[string]Device, _ mqtt.Client, ms
 		logger.Error("Error parsing homie topic, expected 4+ parts")
 		return
 	} else if len(parts) == 3 {
-        // root device attribute, ignore
-        return
-    }
+		// root device attribute, ignore
+		return
+	}
 
 	if parts[0] != "homie" {
 		logger.Error("Error parsing homie topic, doesn't start with 'homie'")
 		return
 	}
 
-    // Parse main topic
+	// Parse main topic
 	path := strings.Join(parts[1:3], "/")
 	logger = logger.With("path", path)
 	dev, exists := devices[path]
@@ -117,29 +132,25 @@ func onMqttMsg(logger *slog.Logger, devices map[string]Device, _ mqtt.Client, ms
 	if parts[3] == "$name" {
 		dev.name = string(payload)
 	} else if parts[3] == "$properties" {
-        props := strings.Split(string(payload), ",")
-        dev.properties = make(map[string]Property, len(props))
+		props := strings.Split(string(payload), ",")
+		dev.properties = make(map[string]Property, len(props))
 	} else if parts[3][0] == '$' {
-        logger.Warn("attribute is ignored", "attribute", parts[3])
+		logger.Warn("attribute is ignored", "attribute", parts[3])
 	} else {
-        dev.parseMqttProp(logger, parts[3], parts[4:], string(payload))
-    }
+		dev.parseMqttProp(logger, metric, parts[3], parts[4:], string(payload))
+	}
 
 	devices[path] = dev
 }
 
 func main() {
-    devices := make(map[string]Device, 10)
+	devices := make(map[string]Device, 10)
 	slog.Info("homie exporter start")
 	reg := prometheus.NewRegistry()
-	m := *NewMetrics(reg)
-	m.With(prometheus.Labels{
-		"device": "airgradient",
-		"sensor": "temperature",
-	}).Set(40)
-
 	slog.Info("prom exporter initialized")
 	http.Handle("/metrics", promhttp.HandlerFor(reg, promhttp.HandlerOpts{Registry: reg}))
+
+	metric := NewMetrics(reg)
 
 	broker := "tcp://192.168.1.252:1883"
 	mqtt_client := mqtt.NewClient(
@@ -162,7 +173,7 @@ func main() {
 		topic,
 		0, // At least once, it doesn't matter if we lose one event
 		func(c mqtt.Client, m mqtt.Message) {
-			onMqttMsg(mqtt_logger, devices, c, m)
+			onMqttMsg(mqtt_logger, metric, devices, c, m)
 		},
 	)
 
