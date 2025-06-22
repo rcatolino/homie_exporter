@@ -19,3 +19,17 @@ homie_sensor{device="sensors",path="airqualilty/sensors",property="PM10",unit="�
 homie_sensor{device="sensors",path="airqualilty/sensors",property="PM2.5",unit="μg/m³"} 3902
 homie_sensor{device="sensors",path="airqualilty/sensors",property="Temperature",unit="°C"} 38.6
 ```
+
+# [homeassistant](https://www.home-assistant.io/integrations/mqtt#mqtt-discovery) mqtt exporter
+
+Example with a mqtt broker at `broker.mqtt.example` :
+
+```
+$ go build
+$ ./homieexporter -p esphome -b tcp://broker.mqtt.example:1883 -l 0.0.0.0:4309
+```
+
+```
+$ curl localhost:4309/metrics
+...
+```
