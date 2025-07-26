@@ -37,17 +37,15 @@ type HAListener struct {
 	client  mqtt.Client
 	devices map[string]Device
 	logger  *slog.Logger
-	prefix  string
 	metric  *prometheus.GaugeVec
 }
 
-func NewHAListener(logger *slog.Logger, client mqtt.Client, prefix string, metric *prometheus.GaugeVec) (*HAListener, error) {
+func NewHAListener(logger *slog.Logger, client mqtt.Client, metric *prometheus.GaugeVec) (*HAListener, error) {
 	l := HAListener{
 		Done:    make(chan error),
 		client:  client,
 		devices: map[string]Device{},
 		logger:  logger,
-		prefix:  prefix,
 		metric:  metric,
 	}
 
@@ -127,7 +125,7 @@ func (h *HAListener) onHaConfMsg(topic string, payload []byte) {
 
 		waitResult := token.WaitTimeout(1 * time.Second)
 		if !waitResult {
-			h.Done <- fmt.Errorf("homeassistant topic subscription timeout")
+			h.Done <- fmt.Errorf("ha state topic subscription timeout topic=%s", conf.StatusTopic)
 			return
 		} else if err := token.Error(); err != nil {
 			h.Done <- err

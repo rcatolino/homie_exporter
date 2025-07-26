@@ -41,7 +41,6 @@ func parseArgs() Args {
 	var args Args
 	flag.StringVar(&(args.brokerUrl), "b", "[::1]:1883", "MQTT broker url. With the format tcp://<host>:<port>")
 	flag.StringVar(&(args.listenAddress), "l", "[::1]:8080", "Address to listen on. With the format <ip>:<port>")
-	flag.StringVar(&(args.hatopicPrefix), "p", "", "Mqtt topic prefix for homeassistant sensors messages")
 	flag.BoolVar(&(args.debug), "d", false, "Set debug mode")
 	flag.Parse()
 
@@ -106,14 +105,10 @@ func main() {
 		return
 	}
 
-	haListener := &HAListener{}
-	if args.hatopicPrefix != "" {
-		haListener, err = NewHAListener(logger, mqttClient, args.hatopicPrefix, metric)
-		if err != nil {
-			logger.Error("halistener creation error", "error", err)
-		}
-	} else {
-		logger.Info("hatopic_prefix is not set, ignoring messages for homeassistant")
+	haListener, err := NewHAListener(logger, mqttClient, metric)
+	if err != nil {
+		logger.Error("halistener creation error", "error", err)
+		return
 	}
 
 	signalChan := make(chan os.Signal, 1)
