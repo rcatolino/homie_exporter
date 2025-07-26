@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"sync"
 	"syscall"
 	"time"
 
@@ -58,7 +59,6 @@ func startMetricServer(listenAddress string) chan error {
 
 func main() {
 	args := parseArgs()
-	devices := make(map[string]Device, 10)
 	lvl := slog.LevelInfo
 	if args.debug {
 		lvl = slog.LevelDebug
@@ -74,7 +74,7 @@ func main() {
 	metric := NewMetrics(reg)
 
 	mqttClient := mqtt.NewClient(
-		mqtt.NewClientOptions().AddBroker(args.brokerUrl),
+		mqtt.NewClientOptions().AddBroker(args.brokerUrl).SetOrderMatters(false).SetClientID("homiexporter"),
 	)
 
 	mqtt_logger := logger.With("broker", args.brokerUrl)
@@ -90,11 +90,13 @@ func main() {
 	// Register to the homie topic
 	topic := "homie/#"
 	homie_mqtt_logger := mqtt_logger.With("subtopic", topic)
+	devices := make(map[string]Device, 10)
+	var devMutex sync.Mutex
 	sub_token := mqttClient.Subscribe(
 		topic,
 		0, // At least once, it doesn't matter if we lose one event
 		func(c mqtt.Client, m mqtt.Message) {
-			onHomieMqttMsg(homie_mqtt_logger, metric, devices, c, m)
+			onHomieMqttMsg(homie_mqtt_logger, metric, devices, &devMutex, c, m)
 		},
 	)
 

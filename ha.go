@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	mqtt "github.com/eclipse/paho.mqtt.golang"
@@ -33,20 +34,22 @@ type HADevice struct {
 }
 
 type HAListener struct {
-	Done    chan error
-	client  mqtt.Client
-	devices map[string]Device
-	logger  *slog.Logger
-	metric  *prometheus.GaugeVec
+	Done     chan error
+	client   mqtt.Client
+	devices  map[string]Device
+	devMutex *sync.Mutex
+	logger   *slog.Logger
+	metric   *prometheus.GaugeVec
 }
 
 func NewHAListener(logger *slog.Logger, client mqtt.Client, metric *prometheus.GaugeVec) (*HAListener, error) {
 	l := HAListener{
-		Done:    make(chan error),
-		client:  client,
-		devices: map[string]Device{},
-		logger:  logger,
-		metric:  metric,
+		Done:     make(chan error),
+		client:   client,
+		devices:  map[string]Device{},
+		devMutex: &sync.Mutex{},
+		logger:   logger,
+		metric:   metric,
 	}
 
 	// Register to the configuration/discovery topic for homeassistant/sensors messages
@@ -93,6 +96,8 @@ func (h *HAListener) onHaConfMsg(topic string, payload []byte) {
 		return
 	}
 
+	h.devMutex.Lock()
+	defer h.devMutex.Unlock()
 	dev, exists := h.devices[conf.Device.ID]
 	// Create dev node if it doesn't exist yet
 	if !exists {
@@ -123,7 +128,7 @@ func (h *HAListener) onHaConfMsg(topic string, payload []byte) {
 			},
 		)
 
-		waitResult := token.WaitTimeout(1 * time.Second)
+		waitResult := token.WaitTimeout(2 * time.Second)
 		if !waitResult {
 			h.Done <- fmt.Errorf("ha state topic subscription timeout topic=%s", conf.StatusTopic)
 			return
@@ -141,35 +146,18 @@ func (h *HAListener) onHaConfMsg(topic string, payload []byte) {
 	dev.properties[conf.UniqueId] = prop
 	// Update the device
 	h.devices[conf.Device.ID] = dev
-
-	// parse config message
-	/*
-		// Register to the data topic for homeassistant messages
-		topic = fmt.Sprintf("%s/#", args.hatopicPrefix)
-		ha_mqtt_logger := mqtt_logger.With("subtopic", topic)
-		sub_token = mqtt_client.Subscribe(
-			topic,
-			0,
-			func(c mqtt.Client, m mqtt.Message) {
-				onHaDataMsg(ha_mqtt_logger, metric, devices, c, m)
-			},
-		)
-
-		wait_result = sub_token.WaitTimeout(5 * time.Second)
-		err = sub_token.Error()
-		if err != nil {
-			ha_mqtt_logger.Error("error subscribing to topic", "error", err)
-			return
-		}
-	*/
 }
 
 func (h *HAListener) onHaDataMsg(dev *Device, prop *Property, payload []byte) {
 	h.logger.Debug("New mqtt message")
+	if prop.ignored {
+		return
+	}
 	value, err := strconv.ParseFloat(string(payload), 64)
 	if err != nil {
-		h.logger.Warn("Couldn't convert payload to float", "payload", payload, "error", err)
-	} else if !prop.ignored {
+		h.logger.Warn("Couldn't convert payload to float, set property to ignore", "device", dev.name, "property", prop.name, "payload", payload, "error", err)
+		prop.ignored = true
+	} else {
 		// Update metric
 		h.metric.With(prometheus.Labels{
 			"device":      dev.name,

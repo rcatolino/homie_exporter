@@ -4,6 +4,7 @@ import (
 	"log/slog"
 	"strconv"
 	"strings"
+	"sync"
 
 	mqtt "github.com/eclipse/paho.mqtt.golang"
 	"github.com/prometheus/client_golang/prometheus"
@@ -65,10 +66,13 @@ func parseHomie(
 	parts []string,
 	payload []byte,
 	devices map[string]Device,
+	devMutex *sync.Mutex,
 ) {
 	// Parse main topic
 	path := strings.Join(parts[1:3], "/")
 	logger = logger.With("path", path)
+	devMutex.Lock()
+	defer devMutex.Unlock()
 	dev, exists := devices[path]
 	if !exists {
 		dev = Device{
@@ -97,6 +101,7 @@ func onHomieMqttMsg(
 	logger *slog.Logger,
 	metric *prometheus.GaugeVec,
 	devices map[string]Device,
+	devMutex *sync.Mutex,
 	_ mqtt.Client,
 	msg mqtt.Message,
 ) {
@@ -113,7 +118,7 @@ func onHomieMqttMsg(
 	}
 
 	if parts[0] == "homie" {
-		parseHomie(logger, metric, parts, payload, devices)
+		parseHomie(logger, metric, parts, payload, devices, devMutex)
 	} else {
 		logger.Error("Error parsing topic, doesn't start with 'homie'")
 	}
