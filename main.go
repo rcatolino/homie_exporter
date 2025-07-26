@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"net/http"
 	"os"
+	"os/signal"
+	"syscall"
 	"time"
 
 	"log/slog"
@@ -29,21 +31,30 @@ func NewMetrics(reg prometheus.Registerer) *prometheus.GaugeVec {
 }
 
 type Args struct {
-	broker_url     string
-	listen_address string
-	hatopic_prefix string
-	debug          bool
+	brokerUrl     string
+	listenAddress string
+	hatopicPrefix string
+	debug         bool
 }
 
 func parseArgs() Args {
 	var args Args
-	flag.StringVar(&(args.broker_url), "b", "[::1]:1883", "MQTT broker url. With the format tcp://<host>:<port>")
-	flag.StringVar(&(args.listen_address), "l", "[::1]:8080", "Address to listen on. With the format <ip>:<port>")
-	flag.StringVar(&(args.hatopic_prefix), "p", "", "Mqtt topic prefix for homeassistant sensors messages")
+	flag.StringVar(&(args.brokerUrl), "b", "[::1]:1883", "MQTT broker url. With the format tcp://<host>:<port>")
+	flag.StringVar(&(args.listenAddress), "l", "[::1]:8080", "Address to listen on. With the format <ip>:<port>")
+	flag.StringVar(&(args.hatopicPrefix), "p", "", "Mqtt topic prefix for homeassistant sensors messages")
 	flag.BoolVar(&(args.debug), "d", false, "Set debug mode")
 	flag.Parse()
 
 	return args
+}
+
+func startMetricServer(listenAddress string) chan error {
+	c := make(chan error)
+	go func() {
+		err := http.ListenAndServe(listenAddress, nil)
+		c <- err
+	}()
+	return c
 }
 
 func main() {
@@ -63,16 +74,16 @@ func main() {
 
 	metric := NewMetrics(reg)
 
-	mqtt_client := mqtt.NewClient(
-		mqtt.NewClientOptions().AddBroker(args.broker_url),
+	mqttClient := mqtt.NewClient(
+		mqtt.NewClientOptions().AddBroker(args.brokerUrl),
 	)
 
-	mqtt_logger := logger.With("broker", args.broker_url)
-	token := mqtt_client.Connect()
+	mqtt_logger := logger.With("broker", args.brokerUrl)
+	token := mqttClient.Connect()
 	wait_result := token.WaitTimeout(5 * time.Second)
 	err := token.Error()
 	if err != nil {
-		mqtt_logger.Error("error connecting to mqtt", "broker", args.broker_url, "error", err)
+		mqtt_logger.Error("error connecting to mqtt", "broker", args.brokerUrl, "error", err)
 		return
 	}
 
@@ -80,7 +91,7 @@ func main() {
 	// Register to the homie topic
 	topic := "homie/#"
 	homie_mqtt_logger := mqtt_logger.With("subtopic", topic)
-	sub_token := mqtt_client.Subscribe(
+	sub_token := mqttClient.Subscribe(
 		topic,
 		0, // At least once, it doesn't matter if we lose one event
 		func(c mqtt.Client, m mqtt.Message) {
@@ -95,52 +106,34 @@ func main() {
 		return
 	}
 
-	if args.hatopic_prefix != "" {
-		logger.Info("hatopic_prefix is set, subscribing to messages for homeassistant", "prefix", args.hatopic_prefix)
-		// Register to the configuration/discovery topic for homeassistant messages
-		topic = "homeassistant/#"
-		haconf_mqtt_logger := mqtt_logger.With("subtopic", topic)
-		sub_token = mqtt_client.Subscribe(
-			topic,
-			0, // At least once, it doesn't matter if we lose one event
-			func(c mqtt.Client, m mqtt.Message) {
-				onHaConfMsg(haconf_mqtt_logger, args.hatopic_prefix, devices, c, m)
-			},
-		)
-
-		wait_result = sub_token.WaitTimeout(5 * time.Second)
-		err = sub_token.Error()
+	haListener := &HAListener{}
+	if args.hatopicPrefix != "" {
+		haListener, err = NewHAListener(logger, mqttClient, args.hatopicPrefix, metric)
 		if err != nil {
-			haconf_mqtt_logger.Error("error subscribing to topic", "error", err)
-			return
+			logger.Error("halistener creation error", "error", err)
 		}
-
-		// Register to the data topic for homeassistant messages
-		topic = fmt.Sprintf("%s/#", args.hatopic_prefix)
-		ha_mqtt_logger := mqtt_logger.With("subtopic", topic)
-		sub_token = mqtt_client.Subscribe(
-			topic,
-			0,
-			func(c mqtt.Client, m mqtt.Message) {
-				onHaDataMsg(ha_mqtt_logger, metric, devices, c, m)
-			},
-		)
-
-		wait_result = sub_token.WaitTimeout(5 * time.Second)
-		err = sub_token.Error()
-		if err != nil {
-			ha_mqtt_logger.Error("error subscribing to topic", "error", err)
-			return
-		}
-
-		logger.Debug("mqtt client subscribed", "subtoken", sub_token)
 	} else {
 		logger.Info("hatopic_prefix is not set, ignoring messages for homeassistant")
 	}
 
-	err = http.ListenAndServe(args.listen_address, nil)
-	if err != nil {
-		logger.Error("Error starting server", "error", err)
-		return
+	signalChan := make(chan os.Signal, 1)
+	signal.Notify(signalChan, os.Interrupt, syscall.SIGTERM)
+
+	httpChan := startMetricServer(args.listenAddress)
+	logger.Debug("http started")
+
+out:
+	for {
+		select {
+		case <-signalChan:
+			logger.Debug("interrupt received")
+			break out
+		case err := <-httpChan:
+			logger.Error("http server", "error", err)
+			break out
+		case err := <-haListener.Done:
+			logger.Warn("ha listener error", "error", err)
+			break out
+		}
 	}
 }
