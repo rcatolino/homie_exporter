@@ -2,9 +2,10 @@ package main
 
 // Represent the actual measurement node metadata
 type Property struct {
-	name    string
-	unit    string
-	ignored bool
+	name        string
+	unit        string
+	statusTopic string
+	ignored     bool
 }
 
 // Represent the device metadata

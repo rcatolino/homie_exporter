@@ -80,6 +80,7 @@ func (h *HAListener) onHaConfMsg(topic string, payload []byte) {
 		return
 	}
 
+	h.logger.Info("New HA entity config message", "topic", topic)
 	var conf HAEntity
 	if err := json.Unmarshal(payload, &conf); err != nil {
 		h.logger.Warn("failed to parse device configuration", "topic", topic, "payload", payload, "error", err)
@@ -111,14 +112,15 @@ func (h *HAListener) onHaConfMsg(topic string, payload []byte) {
 	dev.path = strings.Join(topicParts[:2], "/")
 	dev.name = conf.Device.Name
 	if !exists {
-		h.logger.Debug("Created new homeassistant device", "name", dev.name, "path", dev.path)
+		h.logger.Info("Created new homeassistant device", "id", conf.Device.ID, "name", dev.name, "path", dev.path)
+	} else {
+		h.logger.Info("Updated homeassistant device", "id", conf.Device.ID, "name", dev.name, "path", dev.path)
 	}
 
 	prop, propExists := dev.properties[conf.UniqueId]
 	// Create prop node if it doesn't exist yet
 	if !propExists {
-		prop = Property{ignored: false}
-		h.logger.Debug("Created new homeassistant property")
+		prop = Property{ignored: false, statusTopic: conf.StatusTopic}
 		// Subscribe to the prop state topic
 		token := h.client.Subscribe(
 			conf.StatusTopic,
@@ -136,16 +138,30 @@ func (h *HAListener) onHaConfMsg(topic string, payload []byte) {
 			h.Done <- err
 			return
 		}
-	} else {
-		h.logger.Debug("Updating homeassistant property", "name", prop.name)
 	}
 
 	// Always update the prop attribute in case they change
 	prop.name = conf.Name
 	prop.unit = conf.Unit
+	// TODO: implem status topic change ? Or maybe just abort in that case: it should be very rare.
+	if conf.StatusTopic != prop.statusTopic {
+		h.logger.Warn("Status topic has been updated but we don't support topic change",
+			"device", conf.Device.ID,
+			"prop_name", prop.name,
+			"old_topic", prop.statusTopic,
+			"new_topic", conf.StatusTopic,
+		)
+	}
 	dev.properties[conf.UniqueId] = prop
 	// Update the device
 	h.devices[conf.Device.ID] = dev
+
+	msg := "Created new homeassistant property"
+	if propExists {
+		msg = "Updated homeassistant property"
+	}
+
+	h.logger.Info(msg, "device", conf.Device.ID, "prop_name", prop.name, "prop_unit", prop.unit)
 }
 
 func (h *HAListener) onHaDataMsg(dev *Device, prop *Property, payload []byte) {
