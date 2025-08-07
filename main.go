@@ -34,7 +34,8 @@ func NewMetrics(reg prometheus.Registerer) *prometheus.GaugeVec {
 type Args struct {
 	brokerUrl     string
 	listenAddress string
-	hatopicPrefix string
+	disableHomie   bool
+	disableHA      bool
 	debug         bool
 }
 
@@ -42,6 +43,8 @@ func parseArgs() Args {
 	var args Args
 	flag.StringVar(&(args.brokerUrl), "b", "[::1]:1883", "MQTT broker url. With the format tcp://<host>:<port>")
 	flag.StringVar(&(args.listenAddress), "l", "[::1]:8080", "Address to listen on. With the format <ip>:<port>")
+	flag.BoolVar(&(args.disableHomie), "disable-homie", false, "Enable listening for messages in the homie format")
+	flag.BoolVar(&(args.disableHA), "disable-ha", false, "Enable listening for messages in the home-assistant format")
 	flag.BoolVar(&(args.debug), "d", false, "Set debug mode")
 	flag.Parse()
 
@@ -66,6 +69,12 @@ func main() {
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{
 		Level: lvl,
 	}))
+
+	if args.disableHomie && args.disableHA {
+		logger.Info("Both Homie and HA message are disabled. Nothing to do")
+		return
+	}
+
 	logger.Info("mqtt exporter start")
 	reg := prometheus.NewRegistry()
 	logger.Debug("prom exporter initialized")
@@ -107,29 +116,34 @@ func main() {
 
 	mqtt_logger.Debug("mqtt client started and connected", "wait", wait_result)
 	// Register to the homie topic
-	topic := "homie/#"
-	homie_mqtt_logger := mqtt_logger.With("subtopic", topic)
-	devices := make(map[string]Device, 10)
-	var devMutex sync.Mutex
-	sub_token := mqttClient.Subscribe(
-		topic,
-		0, // At least once, it doesn't matter if we lose one event
-		func(c mqtt.Client, m mqtt.Message) {
-			onHomieMqttMsg(homie_mqtt_logger, metric, devices, &devMutex, c, m)
-		},
-	)
+	if !args.disableHomie {
+		topic := "homie/#"
+		homie_mqtt_logger := mqtt_logger.With("subtopic", topic)
+		devices := make(map[string]Device, 10)
+		var devMutex sync.Mutex
+		sub_token := mqttClient.Subscribe(
+			topic,
+			0, // At least once, it doesn't matter if we lose one event
+			func(c mqtt.Client, m mqtt.Message) {
+				onHomieMqttMsg(homie_mqtt_logger, metric, devices, &devMutex, c, m)
+			},
+		)
 
-	wait_result = sub_token.WaitTimeout(5 * time.Second)
-	err = sub_token.Error()
-	if err != nil {
-		homie_mqtt_logger.Error("error subscribing to topic", "error", err)
-		return
+		wait_result = sub_token.WaitTimeout(5 * time.Second)
+		err = sub_token.Error()
+		if err != nil {
+			homie_mqtt_logger.Error("error subscribing to topic", "error", err)
+			return
+		}
 	}
 
-	haListener, err := NewHAListener(logger, mqttClient, metric)
-	if err != nil {
-		logger.Error("halistener creation error", "error", err)
-		return
+	haListener := &HAListener{}
+	if !args.disableHA {
+		haListener, err = NewHAListener(logger, mqttClient, metric)
+		if err != nil {
+			logger.Error("halistener creation error", "error", err)
+			return
+		}
 	}
 
 	signalChan := make(chan os.Signal, 1)
