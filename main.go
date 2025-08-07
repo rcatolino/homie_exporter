@@ -77,10 +77,29 @@ func main() {
 		mqtt.NewClientOptions().AddBroker(args.brokerUrl).SetOrderMatters(false).SetClientID("homiexporter"),
 	)
 
+	err := reg.Register(prometheus.NewGaugeFunc(
+		prometheus.GaugeOpts{
+			Name:        "mqtt_client_status",
+			ConstLabels: prometheus.Labels{"broker": args.brokerUrl},
+		},
+		func() float64 {
+			if mqttClient.IsConnected() {
+				return 1
+			} else {
+				return 0
+			}
+		},
+	))
+
+	if err != nil {
+		fmt.Printf("Error registering mqtt_client_status metric : %s\n", err)
+		os.Exit(1)
+	}
+
 	mqtt_logger := logger.With("broker", args.brokerUrl)
 	token := mqttClient.Connect()
 	wait_result := token.WaitTimeout(5 * time.Second)
-	err := token.Error()
+	err = token.Error()
 	if err != nil {
 		mqtt_logger.Error("error connecting to mqtt", "broker", args.brokerUrl, "error", err)
 		return

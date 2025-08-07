@@ -55,7 +55,7 @@ func NewHAListener(logger *slog.Logger, client mqtt.Client, metric *prometheus.G
 	// Register to the configuration/discovery topic for homeassistant/sensors messages
 	token := l.client.Subscribe(
 		"homeassistant/sensor/#",
-		1, // At least once
+		0, // At most once
 		func(c mqtt.Client, m mqtt.Message) {
 			l.onHaConfMsg(m.Topic(), m.Payload())
 		},
