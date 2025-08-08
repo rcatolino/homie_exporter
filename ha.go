@@ -100,24 +100,30 @@ func (h *HAListener) onHaConfMsg(topic string, payload []byte) {
 	h.devMutex.Lock()
 	defer h.devMutex.Unlock()
 	dev, exists := h.devices[conf.Device.ID]
+	devUpdated := false
 	// Create dev node if it doesn't exist yet
 	if !exists {
 		dev = Device{
 			properties: map[string]Property{},
 		}
+		h.logger.Info("Created new homeassistant device", "id", conf.Device.ID)
 	}
 
 	// Always update the device attribute in case they change
 	topicParts := strings.SplitN(conf.StatusTopic, "/", 3)
-	dev.path = strings.Join(topicParts[:2], "/")
-	dev.name = conf.Device.Name
-	if !exists {
-		h.logger.Info("Created new homeassistant device", "id", conf.Device.ID, "name", dev.name, "path", dev.path)
-	} else {
-		h.logger.Info("Updated homeassistant device", "id", conf.Device.ID, "name", dev.name, "path", dev.path)
+	if path := strings.Join(topicParts[:2], "/"); !exists || path != dev.path {
+		h.logger.Info("Updating homeassistant device path", "id", conf.Device.ID, "old path", dev.path, "new path", path)
+		dev.path = path
+		devUpdated = true
+	}
+	if name := conf.Device.Name; !exists || name != dev.name {
+		h.logger.Info("Updating homeassistant device name", "id", conf.Device.ID, "old name", dev.name, "new name", name)
+		dev.name = name
+		devUpdated = true
 	}
 
 	prop, propExists := dev.properties[conf.UniqueId]
+	propUpdated := false
 	// Create prop node if it doesn't exist yet
 	if !propExists {
 		prop = Property{ignored: false, statusTopic: conf.StatusTopic}
@@ -141,27 +147,39 @@ func (h *HAListener) onHaConfMsg(topic string, payload []byte) {
 	}
 
 	// Always update the prop attribute in case they change
-	prop.name = conf.Name
-	prop.unit = conf.Unit
-	// TODO: implem status topic change ? Or maybe just abort in that case: it should be very rare.
+	if name := conf.Name; !propExists || name != prop.name {
+		h.logger.Info("Updating homeassistant property name", "device", conf.Device.ID, "old prop_name", prop.name, "new prop_name", name)
+		prop.name = name
+		propUpdated = true
+	}
+
+	if unit := conf.Unit; !propExists || unit != prop.unit {
+		h.logger.Info("Updating homeassistant property unit", "device", conf.Device.ID, "old prop_unit", prop.unit, "new prop_unit", unit)
+		prop.unit = unit
+		propUpdated = true
+	}
+
 	if conf.StatusTopic != prop.statusTopic {
+		// TODO: implem status topic change ? Or maybe just abort in that case: it should be very rare.
 		h.logger.Warn("Status topic has been updated but we don't support topic change",
 			"device", conf.Device.ID,
 			"prop_name", prop.name,
 			"old_topic", prop.statusTopic,
 			"new_topic", conf.StatusTopic,
 		)
-	}
-	dev.properties[conf.UniqueId] = prop
-	// Update the device
-	h.devices[conf.Device.ID] = dev
-
-	msg := "Created new homeassistant property"
-	if propExists {
-		msg = "Updated homeassistant property"
+		// prop.statusTopic = statusTopic
+		// propUpdated = true
 	}
 
-	h.logger.Info(msg, "device", conf.Device.ID, "prop_name", prop.name, "prop_unit", prop.unit)
+	if propUpdated {
+		dev.properties[conf.UniqueId] = prop
+		devUpdated = true
+	}
+
+	if devUpdated {
+		h.devices[conf.Device.ID] = dev
+	}
+
 }
 
 func (h *HAListener) onHaDataMsg(dev *Device, prop *Property, payload []byte) {
