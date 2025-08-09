@@ -1,9 +1,11 @@
 package main
 
 import (
+	"crypto/tls"
 	"flag"
 	"fmt"
 	"net/http"
+	"net/url"
 	"os"
 	"os/signal"
 	"sync"
@@ -34,8 +36,8 @@ func NewMetrics(reg prometheus.Registerer) *prometheus.GaugeVec {
 type Args struct {
 	brokerUrl     string
 	listenAddress string
-	disableHomie   bool
-	disableHA      bool
+	disableHomie  bool
+	disableHA     bool
 	debug         bool
 }
 
@@ -83,7 +85,17 @@ func main() {
 	metric := NewMetrics(reg)
 
 	mqttClient := mqtt.NewClient(
-		mqtt.NewClientOptions().AddBroker(args.brokerUrl).SetOrderMatters(false).SetClientID("homiexporter"),
+		mqtt.NewClientOptions().
+			SetKeepAlive(30 * time.Second).
+			SetConnectionAttemptHandler(
+				func(broker *url.URL, tlsConfig *tls.Config) *tls.Config {
+					logger.Warn("mqtt connection lost, reconnecting", "broker", broker)
+					return tlsConfig
+				},
+			).
+			AddBroker(args.brokerUrl).
+			SetOrderMatters(false).
+			SetClientID("homiexporter"),
 	)
 
 	err := reg.Register(prometheus.NewGaugeFunc(
