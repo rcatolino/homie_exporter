@@ -87,6 +87,7 @@ func main() {
 	mqttClient := mqtt.NewClient(
 		mqtt.NewClientOptions().
 			SetKeepAlive(30 * time.Second).
+			SetAutoReconnect(true).
 			SetConnectionAttemptHandler(
 				func(broker *url.URL, tlsConfig *tls.Config) *tls.Config {
 					logger.Warn("mqtt connection lost, reconnecting", "broker", broker)
