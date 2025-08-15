@@ -1,11 +1,9 @@
 package main
 
 import (
-	"crypto/tls"
 	"flag"
 	"fmt"
 	"net/http"
-	"net/url"
 	"os"
 	"os/signal"
 	"sync"
@@ -84,14 +82,14 @@ func main() {
 
 	metric := NewMetrics(reg)
 
+	mqttDisconnecChan := make(chan error, 1)
 	mqttClient := mqtt.NewClient(
 		mqtt.NewClientOptions().
 			SetKeepAlive(30 * time.Second).
-			SetAutoReconnect(true).
-			SetConnectionAttemptHandler(
-				func(broker *url.URL, tlsConfig *tls.Config) *tls.Config {
-					logger.Warn("mqtt connection lost, reconnecting", "broker", broker)
-					return tlsConfig
+			SetAutoReconnect(false).
+			SetConnectionLostHandler(
+				func(client mqtt.Client, err error) {
+					mqttDisconnecChan <- err
 				},
 			).
 			AddBroker(args.brokerUrl).
@@ -179,6 +177,10 @@ out:
 		case err := <-haListener.Done:
 			logger.Warn("ha listener error", "error", err)
 			exit = 2
+			break out
+		case err := <-mqttDisconnecChan:
+			logger.Warn("mqtt disconnected", "broker", args.brokerUrl, "error", err)
+			exit = 3
 			break out
 		}
 	}
