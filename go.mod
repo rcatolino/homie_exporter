@@ -1,4 +1,4 @@
-module homieexporter
+module ha_mqtt_exporter
 
 go 1.23.3
 
