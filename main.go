@@ -165,6 +165,7 @@ func main() {
 	httpChan := startMetricServer(args.listenAddress)
 	logger.Debug("http started")
 
+	var exit = 0;
 out:
 	for {
 		select {
@@ -173,10 +174,14 @@ out:
 			break out
 		case err := <-httpChan:
 			logger.Error("http server", "error", err)
+			exit = 1
 			break out
 		case err := <-haListener.Done:
 			logger.Warn("ha listener error", "error", err)
+			exit = 2
 			break out
 		}
 	}
+
+	os.Exit(exit)
 }
